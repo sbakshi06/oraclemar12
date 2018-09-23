@@ -1,0 +1,125 @@
+package oracle.idaas.misc.lib.ecc;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.*;
+import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.jcraft.jsch.*;
+import commonRestAPI.commonFramework.LogsCommon;
+import com.jcraft.jsch.ChannelExec;
+import DRProps;
+
+import java.io.*;
+
+/**
+ * Created on 11 Jul 2018
+ *
+ * @author Spriha Bakshi
+ * <p>
+ * ConnectToLinuxRemoteMachine this utility helps you to connect to a linux remote host and execute multiple commands.
+ */
+
+public class ConnectToLinuxRemoteMachine {
+
+    static LogsCommon logs = new LogsCommon();
+    private String host = DRProps.drPrimaryDb;
+    private String username = DRProps.drHostUsername;
+    private String drFolderPath = DRProps.drFolderPath;
+    private String drJavaHome = DRProps.drJavaHome;
+    private String drOracleHome = DRProps.drOracleHome;
+    private String drSwitchOverFileLocation = DRProps.drSwitchOverFileLocation;
+    private String drSwitchOverPropFileLocation = DRProps.drSwitchOverPropFileLocation;
+    private static final String ID_RSA_KEY = "src/test/resources/id_rsa_jenkins";
+    private static final int PORT = 22;
+    private static final String STRICT_HOST_KEY_CHECKING = "StrictHostKeyChecking";
+    private static final String NO = "no";
+
+    public boolean connectRemoteHost() {
+    
+        boolean executionSuccessful = false;
+        try {
+            Session session = getRemoteHostSession();
+            logs.writeLog(Level.INFO, "connectRemoteHost", "Updated properties file");
+            executionSuccessful = performCommands(session);
+            session.disconnect();
+            logs.writeLog(Level.INFO, "connectRemoteHost", "Session Disconnected");
+
+        } catch (SftpException e) {
+            logs.writeLog(Level.SEVERE, "connectRemoteHost", "Could not connect to DB Host" + e);
+        } catch (Exception e) {
+            logs.writeLog(Level.SEVERE, "connectRemoteHost", "SwitchOver failed because of exception" + e);
+        }
+        if (executionSuccessful)
+            logs.writeLog(Level.INFO, "connectRemoteHost", "SwitchOver completed successfully");
+        else
+            logs.writeLog(Level.SEVERE, "connectRemoteHost", "SwitchOver Failed");
+        return executionSuccessful;
+    }
+
+//This method executes commands on remote machine and sets an InputStream to get response from the linu host.
+    private boolean performCommands(Session session) throws Exception {
+        boolean switchoverSuccessful = false;
+        ChannelExec execChannel = (ChannelExec) session.openChannel("exec");
+        try {
+            List<String> executionResult = new ArrayList<>();
+            execChannel.setErrStream(System.err);
+            InputStream consoleInputStream = execChannel.getInputStream();
+            String command = "cd " + drFolderPath + "; ls -lrt; setenv JAVA_HOME " + drJavaHome + "; setenv ORACLE_HOME " + drOracleHome + "; setenv PATH $ORACLE_HOME/bin:$PATH; echo $JAVA_HOME; sh " + drSwitchOverFileLocation;
+            logs.writeLog(Level.INFO, "performCommands", "Going to set switchover commands on exec channel");
+            execChannel.setCommand(command);
+            execChannel.connect();
+            BufferedReader consoleReader = new BufferedReader(new InputStreamReader(consoleInputStream));
+            String consoleData;
+            while ((consoleData = consoleReader.readLine()) != null) {
+                logs.writeLog(Level.INFO, "performSwitchover", consoleData);
+                executionResult.add(consoleData);
+            }
+
+            for (String resultLine : executionResult) {
+                Pattern errorPattern = Pattern.compile(("(?i)\\bSEVERE\\b"));
+                Matcher errorMatcher = errorPattern.matcher(resultLine);
+                Pattern successPattern = Pattern.compile(("Commands Completed successfully"));
+                Matcher successMatcher = successPattern.matcher(resultLine);
+                logs.writeLog(Level.INFO, "performCommands", resultLine);
+                if (errorMatcher.find())
+                    logs.writeLog(Level.SEVERE, "performCommands", "Error occurred while switching environments");
+                else if (successMatcher.find()) {
+                    switchoverSuccessful = true;
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            logs.writeLog(Level.SEVERE, "performSwitchover", "Error occurred while performing Switchover : " + e);
+            throw e;
+        } finally {
+            execChannel.disconnect();
+        }
+        return switchoverSuccessful;
+    }
+
+
+    private Session getRemoteHostSession() {
+        Session session = null;
+        try {
+            JSch jsch = new JSch();
+            jsch.addIdentity(ID_RSA_KEY);
+            Properties config = new Properties();
+            session = jsch.getSession(username, host, PORT);
+            config.put(STRICT_HOST_KEY_CHECKING, NO);
+            session.setConfig(config);
+            session.connect();
+            logs.writeLog(Level.INFO, "getRemoteHostSession", "Connection Successful");
+        } catch (JSchException e) {
+            logs.writeLog(Level.SEVERE, "getRemoteHostSession", "Could not connect to Linux Host : " + e);
+            session = null;
+        }
+        return session;
+    }
+
+
+}
